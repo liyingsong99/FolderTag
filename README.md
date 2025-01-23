@@ -1,6 +1,9 @@
+![image](https://github.com/user-attachments/assets/97b9d19c-e6a6-4485-abc5-64affee7c3ae)
+
 1. Folder Tag is an easy-to-use tool that lets you add tag and description to any folder
 
 2. The data is saved to the ProjectSettings -> FolderTag_Prefs.json
+
 
 
 Tips:
