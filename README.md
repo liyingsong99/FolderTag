@@ -1,0 +1,2 @@
+# FolderTag
+Unity Editor Plugin
