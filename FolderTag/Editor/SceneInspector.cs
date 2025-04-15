@@ -3,21 +3,18 @@ using UnityEngine;
 
 namespace FolderTag
 {
-    [CustomEditor(typeof(DefaultAsset))]
-    public class FolderInspector : Editor
+    [CustomEditor(typeof(SceneAsset))]
+    public class SceneInspector : Editor
     {
         private static bool showPreview;
 
         public override void OnInspectorGUI()
         {
-            if (Selection.assetGUIDs.Length != 1)
+            if (Selection.assetGUIDs.Length != 1 || !FolderSettings.Opt_EnableSceneTag.Value)
                 return;
 
             var guid = Selection.assetGUIDs[0];
             var path = AssetDatabase.GUIDToAssetPath(guid);
-
-            if (!FolderHelper.IsValidFolder(path))
-                return;
 
             var folderData = FolderSettings.GetFolderData(guid, path, out bool subFolder);
 
@@ -29,6 +26,7 @@ namespace FolderTag
                 folderData._guid = guid;
                 folderData._tag = string.Empty;
                 folderData._desc = string.Empty;
+                folderData._isScene = true;
             }
 
             EditorGUI.BeginChangeCheck();
@@ -72,7 +70,7 @@ namespace FolderTag
             showPreview = EditorGUILayout.BeginFoldoutHeaderGroup(showPreview, title);
             if (showPreview)
             {
-                FolderSettings.GetFoldersList().DoLayoutList();
+                FolderSettings.GetFoldersList(isScene: true).DoLayoutList();
             }
 
             GUI.enabled = false;
