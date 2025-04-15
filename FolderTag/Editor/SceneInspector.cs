@@ -22,11 +22,10 @@ namespace FolderTag
             bool create = folderData == null;
             if (create)
             {
-                folderData = FolderSettings.CreateFolderData();
+                folderData = FolderSettings.CreateFolderData(true);
                 folderData._guid = guid;
                 folderData._tag = string.Empty;
                 folderData._desc = string.Empty;
-                folderData._isScene = true;
             }
 
             EditorGUI.BeginChangeCheck();

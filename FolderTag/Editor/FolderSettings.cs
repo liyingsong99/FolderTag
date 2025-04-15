@@ -18,6 +18,7 @@ namespace FolderTag
         private const string mPrefsPath = "ProjectSettings\\" + mPrefsFile;
         private const int mGradientWidth = 16;
 
+        public static EditorOption<string> Opt_FolderTagPath = new EditorOption<string>(nameof(FolderTag) + "_FolderTagPath", mPrefsPath);
         public static EditorOption<bool> Opt_EnableSceneTag = new EditorOption<bool>(nameof(FolderTag) + "_EnableSceneTag", true);
         public static EditorOption<bool> Opt_ShowGradient = new EditorOption<bool>(nameof(FolderTag) + "_ShowGradient", true);
         public static EditorOption<bool> Opt_InspectorEdit = new EditorOption<bool>(nameof(FolderTag) + "_InspectorEdit", true);
@@ -115,9 +116,9 @@ namespace FolderTag
         [InitializeOnLoadMethod]
         private static void InitializeOnLoad()
         {
-            if (File.Exists(mPrefsPath))
+            if (File.Exists(Opt_FolderTagPath.Value))
             {
-                using var file = File.OpenText(mPrefsPath);
+                using var file = File.OpenText(Opt_FolderTagPath.Value);
                 try
                 {
                     var data = JsonUtility.FromJson<JsonWrapper>(file.ReadToEnd());
@@ -141,7 +142,7 @@ namespace FolderTag
                 FoldersDescColor = mFoldersDescTint;
             }
 
-            //从Resources目录中加载所有命名为FolderTag.json 的额外数据文件
+            //从Resources目录中加载所有命名为FolderTag.json 的额外数据文件 
             var allTagJsons = Resources.LoadAll<TextAsset>("FolderTag_Prefs");
             foreach (var tagJson in allTagJsons)
             {
@@ -170,6 +171,13 @@ namespace FolderTag
         {
             // editor prefs variables
             EditorGUI.BeginChangeCheck();
+
+            var folderTagPath = EditorGUILayout.TextField("Data Save Path", Opt_FolderTagPath.Value);
+            if (folderTagPath != Opt_FolderTagPath.Value)
+            {
+                Opt_FolderTagPath.Value = folderTagPath;
+                EditorApplication.RepaintProjectWindow();
+            }
 
             var enableSceneTag = EditorGUILayout.Toggle("Enable Scene Tag", Opt_EnableSceneTag.Value);
             if (enableSceneTag != Opt_EnableSceneTag.Value)
@@ -246,15 +254,14 @@ namespace FolderTag
             GetFoldersList(true);
         }
 
-        private static ReorderableList currentPreviewList;
+        private static ReorderableList scenePreviewList, folderPreviewList;
         public static ReorderableList GetFoldersList(bool forceNew = false, bool isScene = false)
         {
-            currentPreviewList = isScene ? scenesList : foldersList;
+            var currentPreviewList = isScene ? scenePreviewList : folderPreviewList;
             if (currentPreviewList != null && !forceNew)
                 return currentPreviewList;
 
             float lineHeight = EditorGUIUtility.singleLineHeight;
-
             var listPreview = listFoldersData.Where(n => n._isScene == isScene).ToList();
 
             currentPreviewList = new ReorderableList(listPreview, typeof(FolderData), true, true, true, true);
@@ -273,6 +280,9 @@ namespace FolderTag
                 if (GUI.Button(deleteRect, "x"))
                 {
                     listFoldersData.Remove(element);
+                    dicFoldersData.Remove(element._guid);
+                    SaveProjectPrefs();
+                    EditorApplication.RepaintProjectWindow();
                 }
 
                 EditorGUI.BeginChangeCheck();
@@ -338,7 +348,9 @@ namespace FolderTag
             {
                 var folderData = listPreview[data.index];
                 listFoldersData.Remove(folderData);
+                dicFoldersData.Remove(folderData._guid);
                 SaveProjectPrefs();
+                EditorApplication.RepaintProjectWindow();
             };
             currentPreviewList.onAddCallback = data => { listFoldersData.Add(CreateFolderData(isScene)); };
             currentPreviewList.drawHeaderCallback = rect => { EditorGUI.LabelField(rect, new GUIContent(isScene ? "Scenes" : "Folders", "")); };
@@ -405,7 +417,7 @@ namespace FolderTag
                     .Select(n => new KeyValuePair<string, FolderData>(n._guid, n)))
             };
 
-            File.WriteAllText(mPrefsPath, JsonUtility.ToJson(json, true));
+            File.WriteAllText(Opt_FolderTagPath.Value, JsonUtility.ToJson(json, true));
         }
     }
 }
