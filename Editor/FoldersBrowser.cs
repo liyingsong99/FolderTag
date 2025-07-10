@@ -1,5 +1,6 @@
 using UnityEditor;
 using UnityEngine;
+using System.Collections.Generic;
 
 namespace FolderTag
 {
@@ -7,15 +8,33 @@ namespace FolderTag
     {
         private static GUIStyle s_labelNormal;
         private static GUIStyle s_labelSelected;
+        private static readonly Dictionary<string, CachedFolderData> folderDataCache = new Dictionary<string, CachedFolderData>();
+        private static int lastFrameCount = -1;
+
+        // 缓存数据结构
+        private struct CachedFolderData
+        {
+            public FolderSettings.FolderData Data;
+            public bool IsSubFolder;
+            public int FrameCount;
+            public bool IsValid;
+        }
 
         public static void DrawFolderMemos(string guid, Rect rect)
         {
-            //var t = Stopwatch.StartNew();
-            DrawFolderTag(guid, rect);
-            //t.Stop();
+            // 避免在同一帧内重复处理相同的GUID
+            if (lastFrameCount == Time.frameCount && folderDataCache.ContainsKey(guid))
+            {
+                var cachedData = folderDataCache[guid];
+                if (cachedData.IsValid)
+                {
+                    DrawFolderTagCached(guid, rect, cachedData.Data, cachedData.IsSubFolder);
+                }
+                return;
+            }
 
-            //if(t.ElapsedMilliseconds > 0)
-            //    UnityEngine.Debug.Log($"DrawFolders: {t.ElapsedMilliseconds} ms");
+            DrawFolderTag(guid, rect);
+            lastFrameCount = Time.frameCount;
         }
 
         private static void DrawFolderTag(string guid, Rect rect)
@@ -32,8 +51,32 @@ namespace FolderTag
 
             var data = FolderSettings.GetFolderData(guid, path, out var isSubFolder);
             if (data == null)
+            {
+                // 缓存无效数据，避免重复查询
+                folderDataCache[guid] = new CachedFolderData
+                {
+                    Data = null,
+                    IsSubFolder = false,
+                    FrameCount = Time.frameCount,
+                    IsValid = false
+                };
                 return;
+            }
 
+            // 缓存有效数据
+            folderDataCache[guid] = new CachedFolderData
+            {
+                Data = data,
+                IsSubFolder = isSubFolder,
+                FrameCount = Time.frameCount,
+                IsValid = true
+            };
+
+            DrawFolderTagCached(guid, rect, data, isSubFolder);
+        }
+
+        private static void DrawFolderTagCached(string guid, Rect rect, FolderSettings.FolderData data, bool isSubFolder)
+        {
             bool curIsTreeView = (rect.x - 16) % 14 == 0;
             if (!curIsTreeView)
                 rect.xMin += 3;
@@ -70,6 +113,27 @@ namespace FolderTag
                     SetLabelTint();
 
                 return FolderHelper.IsSelected(guid) ? s_labelSelected : s_labelNormal;
+            }
+        }
+
+        /// <summary>
+        /// 清除所有缓存数据，强制下次绘制时重新获取folder data
+        /// </summary>
+        public static void ClearCache()
+        {
+            folderDataCache.Clear();
+            lastFrameCount = -1;
+        }
+
+        /// <summary>
+        /// 清除特定GUID的缓存数据
+        /// </summary>
+        /// <param name="guid">要清除缓存的GUID</param>
+        public static void ClearSpecificCache(string guid)
+        {
+            if (!string.IsNullOrEmpty(guid) && folderDataCache.ContainsKey(guid))
+            {
+                folderDataCache.Remove(guid);
             }
         }
 

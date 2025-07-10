@@ -3,79 +3,34 @@ using UnityEngine;
 
 namespace FolderTag
 {
+    /// <summary>
+    /// 文件夹检查器，继承自BaseInspector以复用通用功能
+    /// </summary>
     [CustomEditor(typeof(DefaultAsset))]
-    public class FolderInspector : Editor
+    public class FolderInspector : BaseInspector
     {
-        private static bool showPreview;
-
-        public override void OnInspectorGUI()
+        /// <summary>
+        /// 验证当前选择是否为有效的文件夹
+        /// </summary>
+        /// <returns>如果是有效文件夹返回true，否则返回false</returns>
+        protected override bool IsValidSelection()
         {
             if (Selection.assetGUIDs.Length != 1)
-                return;
+                return false;
 
             var guid = Selection.assetGUIDs[0];
             var path = AssetDatabase.GUIDToAssetPath(guid);
 
-            if (!FolderHelper.IsValidFolder(path))
-                return;
+            return FolderHelper.IsValidFolder(path);
+        }
 
-            var folderData = FolderSettings.GetFolderData(guid, path, out bool subFolder);
-
-            GUI.enabled = true;
-            bool create = folderData == null;
-            if (create)
-            {
-                folderData = FolderSettings.CreateFolderData();
-                folderData._guid = guid;
-                folderData._tag = string.Empty;
-                folderData._desc = string.Empty;
-            }
-
-            EditorGUI.BeginChangeCheck();
-
-            EditorGUILayout.LabelField("Tag");
-            var strTag = EditorGUILayout.TextField(folderData._tag, EditorStyles.textField);
-
-            // Limit tag length to 50 characters
-            if (strTag.Length > 50)
-            {
-                folderData._tag = strTag.Substring(0, 50);
-            }
-            else
-            {
-                folderData._tag = strTag;
-            }
-
-            GUILayout.Space(5);
-
-            EditorGUILayout.LabelField("Description");
-            folderData._desc = EditorGUILayout.TextArea(folderData._desc, EditorStyles.textArea, GUILayout.MinHeight(300));
-
-            if (EditorGUI.EndChangeCheck())
-            {
-                if (create) FolderSettings.AddFoldersList(folderData);
-
-                EditorApplication.RepaintProjectWindow();
-                FolderSettings.SaveProjectPrefs();
-            }
-
-            GUILayout.Space(10);
-
-            if (GUILayout.Button("Clean Empty Data"))
-            {
-                FolderSettings.CleanEmptyData();
-            }
-
-            GUILayout.Space(10);
-
-            string title = showPreview ? " ∧ Hide Tags Preview" : " ∨ Show Tags Preview";
-            showPreview = EditorGUILayout.BeginFoldoutHeaderGroup(showPreview, title);
-            if (showPreview)
-            {
-                FolderSettings.GetFoldersList().DoLayoutList();
-            }
-
-            GUI.enabled = false;
+        /// <summary>
+        /// 获取是否为场景检查器
+        /// </summary>
+        /// <returns>文件夹检查器返回false</returns>
+        protected override bool IsSceneInspector()
+        {
+            return false;
         }
     }
 }

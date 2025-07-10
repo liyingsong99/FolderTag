@@ -1,7 +1,7 @@
 {
     "name": "com.liyingsong.foldertag",
     "displayName": "Folder Tag",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "unity": "2019.4",
     "description": "Unity Editor Plugin that allows you to tag and annotate any folder and share it with other members of the project. The data is saved to ProjectSettings and can be shared via version control.",
     "keywords": [

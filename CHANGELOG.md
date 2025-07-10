@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2025-01-27
+
+### Fixed
+- **Memory Leak**: Fixed Texture2D memory leak in gradient generation system
+- **Thread Safety**: Added thread-safe locking mechanism for static data access
+- **Exception Handling**: Enhanced file I/O and JSON serialization error handling
+- **Performance**: Implemented caching system to reduce GUI redraw overhead
+- **Input Validation**: Improved tag length validation with control character filtering
+- **Null Safety**: Added comprehensive null checks and defensive programming
+
+### Changed
+- **Code Architecture**: Refactored Inspector classes with new BaseInspector base class
+- **Error Logging**: Enhanced error messages with detailed context information
+- **Performance**: Optimized dictionary lookup operations with smart caching
+- **Code Quality**: Added comprehensive XML documentation comments
+- **Cache Management**: Automatic cache invalidation when data changes
+
+### Technical Improvements
+- Thread-safe data access with lock mechanism
+- Smart GUI caching to prevent redundant operations
+- Improved exception handling for edge cases
+- Enhanced input validation and sanitization
+- Better resource management and cleanup
+
 ## [1.0.0] - 2025-01-27
 
 ### Added
