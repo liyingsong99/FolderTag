@@ -1,5 +1,5 @@
 {
-    "name": "FolderTag.Editor",
+    "name": "com.liyingsong.foldertag.Editor",
     "rootNamespace": "FolderTag",
     "references": [],
     "includePlatforms": [

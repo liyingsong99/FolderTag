@@ -1,0 +1,31 @@
+{
+    "name": "com.liyingsong.foldertag",
+    "displayName": "Folder Tag",
+    "version": "1.0.0",
+    "unity": "2019.4",
+    "description": "Unity Editor Plugin that allows you to tag and annotate any folder and share it with other members of the project. The data is saved to ProjectSettings and can be shared via version control.",
+    "keywords": [
+        "editor",
+        "folder",
+        "tag",
+        "annotation",
+        "organization",
+        "project management"
+    ],
+    "category": "Editor Extensions",
+    "author": {
+        "name": "Li Yingsong",
+        "url": "https://github.com/liyingsong99"
+    },
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/liyingsong99/FolderTag.git"
+    },
+    "bugs": {
+        "url": "https://github.com/liyingsong99/FolderTag/issues"
+    },
+    "homepage": "https://github.com/liyingsong99/FolderTag#readme",
+    "dependencies": {},
+    "samples": []
+}
