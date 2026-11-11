@@ -126,8 +126,11 @@ namespace FolderTag
             {
                 try
                 {
-                    using var file = File.OpenText(Opt_FolderTagPath.Value);
-                    var jsonContent = file.ReadToEnd();
+                    string jsonContent;
+                    using (var file = File.OpenText(Opt_FolderTagPath.Value))
+                    {
+                        jsonContent = file.ReadToEnd();
+                    }
                     
                     if (!string.IsNullOrWhiteSpace(jsonContent))
                     {
@@ -487,7 +490,7 @@ namespace FolderTag
                         return null; // 已经到达根目录，没有找到
 
                     // 获取父目录的GUID并查找对应的数据
-                    var searchGuid = AssetDatabase.GUIDFromAssetPath(searchPath).ToString();
+                    var searchGuid = AssetDatabase.AssetPathToGUID(searchPath);
 
                     dicFoldersData.TryGetValue(searchGuid, out folderData);
                     
