@@ -18,8 +18,94 @@ namespace FolderTag
         private const string mPrefsFile = nameof(FolderTag) + "_Prefs.json";
         private static readonly string mPrefsPath = Path.Combine("ProjectSettings", mPrefsFile);
         private const int mGradientWidth = 16;
+        private const string mLegacyPathKey = nameof(FolderTag) + "_FolderTagPath";
 
-        public static EditorOption<string> Opt_FolderTagPath = new EditorOption<string>(nameof(FolderTag) + "_FolderTagPath", mPrefsPath);
+        /// <summary>
+        /// 配置文件加载状态。Corrupted = 文件存在但读不出来，此时禁止写入，
+        /// 避免用内存里的空数据/部分数据覆盖原始文件。
+        /// </summary>
+        public enum LoadState
+        {
+            FileMissing,
+            Ok,
+            Corrupted
+        }
+
+        private static LoadState mLoadState = LoadState.Corrupted;
+        private static string mLoadError;
+        private static string mLoadedContent;
+        private static bool mHasUnsavedChanges;
+        private static EditorOption<string> mOptFolderTagPath;
+
+        public static LoadState CurrentLoadState { get { return mLoadState; } }
+        public static string LoadErrorMessage { get { return mLoadError; } }
+        public static bool HasUnsavedChanges { get { return mHasUnsavedChanges; } }
+
+        /// <summary>
+        /// 用户实际改动了数据时调用。脏标记权威来源是"用户改过"，
+        /// 而不是"写失败了"，这样 Corrupted 拒写、冲突取消等分支也不会漏掉未保存状态。
+        /// </summary>
+        public static void MarkDirty()
+        {
+            mHasUnsavedChanges = true;
+        }
+
+        private static bool ConfirmBeforeReplacingMemory()
+        {
+            return !mHasUnsavedChanges || EditorUtility.DisplayDialog(
+                "存在未保存的修改", "继续将放弃当前编辑。需要保留时，请先取消并保存副本。",
+                "放弃修改并继续", "取消");
+        }
+
+
+        /// <summary>
+        /// 保存路径按工程隔离，避免 A 工程的绝对路径被 B 工程继承。
+        /// </summary>
+        public static EditorOption<string> Opt_FolderTagPath
+        {
+            get
+            {
+                if (mOptFolderTagPath == null)
+                    mOptFolderTagPath = new EditorOption<string>(GetProjectPathKey(), mPrefsPath);
+                return mOptFolderTagPath;
+            }
+        }
+
+        /// <summary>
+        /// 工程身份 = productGUID + 本地工程绝对路径哈希。
+        /// 只用 productGUID 时，复制出来的工程（保留同一份 ProjectSettings）会共用同一个键；
+        /// 加上路径哈希后，同一台机器上的两个副本不会串，同一份工程在不同机器上也仍能各自独立。
+        /// </summary>
+        private static string GetProjectIdentity()
+        {
+            var root = Path.GetFullPath(Path.Combine(Application.dataPath, "..")).Replace('\\', '/');
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+                root = root.ToLowerInvariant();
+            var pathHash = ComputeHash(root).Substring(0, 16);
+
+            try
+            {
+                var productGuid = PlayerSettings.productGUID;
+                if (productGuid != Guid.Empty)
+                    return productGuid.ToString("N") + "_" + pathHash;
+            }
+            catch (Exception)
+            {
+                // 忽略，只用路径哈希
+            }
+
+            return pathHash;
+        }
+
+        private static string GetMigrationFlagKey()
+        {
+            return nameof(FolderTag) + "_PathMigrated_" + GetProjectIdentity();
+        }
+
+        private static string GetProjectPathKey()
+        {
+            return mLegacyPathKey + "_" + GetProjectIdentity();
+        }
         public static EditorOption<bool> Opt_EnableSceneTag = new EditorOption<bool>(nameof(FolderTag) + "_EnableSceneTag", true);
         public static EditorOption<bool> Opt_ShowGradient = new EditorOption<bool>(nameof(FolderTag) + "_ShowGradient", true);
         public static EditorOption<bool> Opt_InspectorEdit = new EditorOption<bool>(nameof(FolderTag) + "_InspectorEdit", true);
@@ -55,37 +141,38 @@ namespace FolderTag
         private class JsonWrapper
         {
             public Color LabelColor;
-            public DictionaryData<string, FolderData> FoldersData;
+            public DictionaryData FoldersData;
 
+            // Unity 2019.4 会忽略自定义泛型字段；使用具体类型并保留既有 JSON 字段名。
             [Serializable]
-            public class DictionaryData<TKey, TValue>
+            public class DictionaryData
             {
-                public List<TKey> Keys;
-                public List<TValue> Values;
+                public List<string> Keys;
+                public List<FolderData> Values;
 
-                public IEnumerable<KeyValuePair<TKey, TValue>> Enumerate()
+                public IEnumerable<KeyValuePair<string, FolderData>> Enumerate()
                 {
                     if (Keys == null || Values == null)
                         yield break;
 
                     for (var n = 0; n < Keys.Count; n++)
-                        yield return new KeyValuePair<TKey, TValue>(Keys[n], Values[n]);
+                        yield return new KeyValuePair<string, FolderData>(Keys[n], Values[n]);
                 }
 
                 public DictionaryData()
-                    : this(new List<TKey>(), new List<TValue>())
                 {
+                    // 不给缺失字段补空列表，保留 JsonUtility 读取残缺配置时的判定依据。
                 }
 
-                public DictionaryData(List<TKey> keys, List<TValue> values)
+                public DictionaryData(List<string> keys, List<FolderData> values)
                 {
                     Keys = keys;
                     Values = values;
                 }
 
-                public DictionaryData(IEnumerable<KeyValuePair<TKey, TValue>> data)
+                public DictionaryData(IEnumerable<KeyValuePair<string, FolderData>> data)
                 {
-                    var pairs = data as KeyValuePair<TKey, TValue>[] ?? data.ToArray();
+                    var pairs = data as KeyValuePair<string, FolderData>[] ?? data.ToArray();
                     Keys = pairs.Select(n => n.Key).ToList();
                     Values = pairs.Select(n => n.Value).ToList();
                 }
@@ -122,93 +209,287 @@ namespace FolderTag
             listFoldersData = new List<FolderData>();
             FoldersDescColor = mFoldersDescTint;
 
-            if (File.Exists(Opt_FolderTagPath.Value))
-            {
-                try
-                {
-                    string jsonContent;
-                    using (var file = File.OpenText(Opt_FolderTagPath.Value))
-                    {
-                        jsonContent = file.ReadToEnd();
-                    }
-                    
-                    if (!string.IsNullOrWhiteSpace(jsonContent))
-                    {
-                        var data = JsonUtility.FromJson<JsonWrapper>(jsonContent);
-                        
-                        if (data?.FoldersData != null)
-                        {
-                            listFoldersData = data.FoldersData
-                                .Enumerate()
-                                .Where(n => n.Value != null && !string.IsNullOrEmpty(n.Value._guid))
-                                .Select(n => n.Value)
-                                .ToList();
-                        }
+            LoadProjectPrefs();
 
-                        if (data != null)
-                        {
-                            FoldersDescColor = data.LabelColor;
-                        }
-                    }
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    Debug.LogError($"[FolderTag] 无法访问配置文件：{ex.Message}");
-                }
-                catch (DirectoryNotFoundException ex)
-                {
-                    Debug.LogError($"[FolderTag] 配置文件目录不存在：{ex.Message}");
-                }
-                catch (FileNotFoundException ex)
-                {
-                    Debug.LogWarning($"[FolderTag] 配置文件不存在，将使用默认设置：{ex.Message}");
-                }
-                catch (System.ArgumentException ex)
-                {
-                    Debug.LogError($"[FolderTag] 配置文件JSON格式错误：{ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"[FolderTag] 加载配置文件时发生未知错误：{ex.Message}");
-                }
-            }
-
-            //从Resources目录中加载所有命名为FolderTag.json 的额外数据文件 
-            var allTagJsons = Resources.LoadAll<TextAsset>("FolderTag_Prefs");
-            foreach (var tagJson in allTagJsons)
-            {
-                var data = JsonUtility.FromJson<JsonWrapper>(tagJson.text);
-                var list = data.FoldersData
-                    .Enumerate()
-                    .Select(n => n.Value)
-                    .ToList();
-
-                foreach (var item in list)
-                {
-                    if (listFoldersData.Any(n => n._guid == item._guid))
-                        continue;
-
-                    listFoldersData.Add(item);
-                }
-            }
-
-            dicFoldersData = listFoldersData.ToDictionary(n => n._guid, n => n);
-
+            dicFoldersData = BuildDictionary(listFoldersData);
             UpdateGradient();
             EditorApplication.projectWindowItemOnGUI += FoldersBrowser.DrawFolderMemos;
         }
 
+        /// <summary>
+        /// 按 GUID 去重建索引：重复保留首条并警告，空 GUID 跳过，绝不抛异常。
+        /// </summary>
+        private static Dictionary<string, FolderData> BuildDictionary(List<FolderData> source)
+        {
+            var result = new Dictionary<string, FolderData>();
+            if (source == null)
+                return result;
+
+            foreach (var item in source)
+            {
+                if (item == null || string.IsNullOrEmpty(item._guid))
+                    continue;
+
+                // 与原实现保持一致：全零 GUID 视为无效数据
+                if (item._guid == Guid.Empty.ToString())
+                    continue;
+
+                if (result.ContainsKey(item._guid))
+                {
+                    Debug.LogWarning($"[FolderTag] 配置中存在重复的 GUID，已保留首条：{item._guid}");
+                    continue;
+                }
+
+                result[item._guid] = item;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 一次加载的完整结果，先在临时对象里算好，成功后才提交到静态状态。
+        /// </summary>
+        private sealed class PrefsSnapshot
+        {
+            public LoadState State;
+            public string Error;
+            public List<FolderData> Folders = new List<FolderData>();
+            public Color LabelColor;
+            public string Content;
+        }
+
+        /// <summary>
+        /// 纯读取：只依赖传入路径，不修改任何静态状态。失败时返回对应状态的快照。
+        /// </summary>
+        private static PrefsSnapshot ReadPrefs(string path)
+        {
+            var snapshot = new PrefsSnapshot
+            {
+                State = LoadState.Corrupted,
+                LabelColor = mFoldersDescTint,
+                Folders = new List<FolderData>()
+            };
+
+            if (string.IsNullOrEmpty(path))
+            {
+                snapshot.Error = "配置路径为空";
+                return snapshot;
+            }
+
+            if (!File.Exists(path))
+            {
+                snapshot.State = LoadState.FileMissing;
+                return snapshot;
+            }
+
+            try
+            {
+                string jsonContent;
+                using (var file = File.OpenText(path))
+                {
+                    jsonContent = file.ReadToEnd();
+                }
+
+                if (string.IsNullOrWhiteSpace(jsonContent))
+                {
+                    snapshot.Error = "配置文件内容为空";
+                    return snapshot;
+                }
+
+                var data = JsonUtility.FromJson<JsonWrapper>(jsonContent);
+                if (data == null)
+                {
+                    snapshot.Error = "配置文件不是合法的 JSON";
+                    return snapshot;
+                }
+
+                // JsonUtility 会把 null/缺失的容器或列表补成空实例，必须同时核对源 JSON 的字段形状。
+                var dictionaryStart = FindJsonMember(jsonContent, jsonContent.IndexOf('{'), "FoldersData");
+                if (data.FoldersData == null || dictionaryStart < 0 || jsonContent[dictionaryStart] != '{')
+                {
+                    snapshot.Error = "配置文件缺少 FoldersData 字段";
+                    return snapshot;
+                }
+
+                var keys = data.FoldersData.Keys;
+                var values = data.FoldersData.Values;
+                var keysStart = FindJsonMember(jsonContent, dictionaryStart, "Keys");
+                var valuesStart = FindJsonMember(jsonContent, dictionaryStart, "Values");
+                if (keysStart < 0 || valuesStart < 0 || jsonContent[keysStart] != '[' || jsonContent[valuesStart] != '[' ||
+                    keys == null || values == null || keys.Count != values.Count)
+                {
+                    snapshot.Error = "配置文件的 Keys 与 Values 数量不一致";
+                    return snapshot;
+                }
+
+                var loaded = new List<FolderData>();
+                var duplicated = 0;
+                var emptyGuid = 0;
+                var mismatchedGuid = 0;
+                var known = new HashSet<string>();
+
+                for (var n = 0; n < values.Count; n++)
+                {
+                    var value = values[n];
+                    if (value == null || string.IsNullOrEmpty(value._guid))
+                    {
+                        emptyGuid++;
+                        continue;
+                    }
+
+                    if (!string.Equals(keys[n], value._guid, StringComparison.Ordinal))
+                        mismatchedGuid++;
+
+                    if (!known.Add(value._guid))
+                    {
+                        duplicated++;
+                        continue;
+                    }
+
+                    loaded.Add(value);
+                }
+
+                snapshot.Folders = loaded;
+                snapshot.LabelColor = data.LabelColor;
+                snapshot.Content = jsonContent;
+
+                // 主配置里有坏条目时不能当成正常加载：
+                // 下次保存会把被跳过的条目永久写掉，所以进保护状态等用户明确处理。
+                if (emptyGuid > 0 || duplicated > 0 || mismatchedGuid > 0)
+                {
+                    snapshot.State = LoadState.Corrupted;
+                    snapshot.Error = "主配置存在异常条目（空 GUID " + emptyGuid + " 条、重复 GUID " + duplicated + " 条、键值 GUID 不一致 " + mismatchedGuid + " 条），已暂停写入";
+                    return snapshot;
+                }
+
+                snapshot.State = LoadState.Ok;
+                return snapshot;
+            }
+            catch (FileNotFoundException)
+            {
+                // 检查与打开之间被删掉：按"不存在"处理，允许重新创建。
+                snapshot.State = LoadState.FileMissing;
+                return snapshot;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                snapshot.Error = "无法访问配置文件：" + ex.Message;
+            }
+            catch (DirectoryNotFoundException ex)
+            {
+                snapshot.Error = "配置文件目录不存在：" + ex.Message;
+            }
+            catch (Exception ex)
+            {
+                snapshot.Error = "读取配置文件失败：" + ex.Message;
+            }
+
+            return snapshot;
+        }
+
+        public static void LoadProjectPrefs()
+        {
+            OpenPrefs(Opt_FolderTagPath.Value, false);
+        }
+
+        // 重载和打开共用此入口；先读到有效快照，再确认并提交，失败保留当前编辑。
+        private static bool OpenPrefs(string path, bool changePath)
+        {
+            var snapshot = ReadPrefs(path);
+            if (snapshot.State == LoadState.Corrupted || (changePath && snapshot.State == LoadState.FileMissing))
+            {
+                mLoadError = snapshot.Error ?? "目标文件不存在。";
+                if (!changePath) mLoadState = LoadState.Corrupted;
+                return false;
+            }
+            if (!ConfirmBeforeReplacingMemory()) return false;
+            if (changePath) Opt_FolderTagPath.Value = path;
+            mLoadState = snapshot.State;
+            mLoadedContent = snapshot.Content;
+            mLoadError = null;
+            listFoldersData = snapshot.Folders;
+            FoldersDescColor = snapshot.LabelColor;
+            mHasUnsavedChanges = false;
+            LoadResourcePrefs();
+            dicFoldersData = BuildDictionary(listFoldersData);
+            FoldersBrowser.ClearCache();
+            EditorApplication.RepaintProjectWindow();
+            return true;
+        }
+
+        /// <summary>
+        /// 从 Resources 目录收集额外配置。单个文件损坏只跳过该文件，不中断初始化。
+        /// </summary>
+        public static void LoadResourcePrefs()
+        {
+            TextAsset[] allTagJsons;
+            try
+            {
+                allTagJsons = Resources.LoadAll<TextAsset>("FolderTag_Prefs");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[FolderTag] 读取 Resources 配置文件失败：{ex.Message}");
+                return;
+            }
+
+            foreach (var tagJson in allTagJsons)
+            {
+                if (tagJson == null || string.IsNullOrEmpty(tagJson.text))
+                    continue;
+
+                try
+                {
+                    var data = JsonUtility.FromJson<JsonWrapper>(tagJson.text);
+                    if (data == null || data.FoldersData == null)
+                    {
+                        Debug.LogWarning($"[FolderTag] 跳过无法解析的 Resources 配置：{tagJson.name}");
+                        continue;
+                    }
+
+                    var keys = data.FoldersData.Keys;
+                    var values = data.FoldersData.Values;
+                    if (keys == null || values == null || keys.Count != values.Count)
+                    {
+                        Debug.LogWarning($"[FolderTag] 跳过键值数量不一致的 Resources 配置：{tagJson.name}");
+                        continue;
+                    }
+
+                    for (var n = 0; n < values.Count; n++)
+                    {
+                        var item = values[n];
+                        if (item == null || string.IsNullOrEmpty(item._guid))
+                            continue;
+
+                        if (listFoldersData.Any(existing => existing._guid == item._guid))
+                            continue;
+
+                        listFoldersData.Add(item);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[FolderTag] 跳过损坏的 Resources 配置 {tagJson.name}：{ex.Message}");
+                }
+            }
+        }
+
         public override void OnGUI(string searchContext)
         {
+            DrawMigrationBanner();
+            DrawLoadStatePanel();
+
             // editor prefs variables
             EditorGUI.BeginChangeCheck();
 
-            var folderTagPath = EditorGUILayout.TextField("Data Save Path", Opt_FolderTagPath.Value);
-            if (folderTagPath != Opt_FolderTagPath.Value)
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("Data Save Path", Opt_FolderTagPath.Value);
+            if (GUILayout.Button("打开配置", GUILayout.Width(80f)))
             {
-                Opt_FolderTagPath.Value = folderTagPath;
-                EditorApplication.RepaintProjectWindow();
+                var picked = EditorUtility.OpenFilePanel("打开 FolderTag 配置", Application.dataPath, "json");
+                if (!string.IsNullOrEmpty(picked)) OpenPrefs(picked, true);
             }
+            EditorGUILayout.EndHorizontal();
 
             var enableSceneTag = EditorGUILayout.Toggle("Enable Scene Tag", Opt_EnableSceneTag.Value);
             if (enableSceneTag != Opt_EnableSceneTag.Value)
@@ -242,10 +523,48 @@ namespace FolderTag
             if (EditorGUI.EndChangeCheck())
             {
                 EditorApplication.RepaintProjectWindow();
+                MarkDirty();
                 SaveProjectPrefs();
             }
 
             GetFoldersList().DoLayoutList();
+        }
+
+        /// <summary>
+        /// 旧全局路径键的迁移入口：只作候选展示，用户确认后才写入本工程的键。
+        /// </summary>
+        private void DrawMigrationBanner()
+        {
+            var migratedKey = GetMigrationFlagKey();
+            if (EditorPrefs.GetBool(migratedKey, false))
+                return;
+
+            if (EditorPrefs.HasKey(GetProjectPathKey()))
+                return;
+
+            if (!EditorPrefs.HasKey(mLegacyPathKey))
+                return;
+
+            var legacyPath = EditorPrefs.GetString(mLegacyPathKey, string.Empty);
+            if (string.IsNullOrEmpty(legacyPath))
+                return;
+
+            EditorGUILayout.HelpBox(
+                "检测到旧版本的全局保存路径：\n" + legacyPath + "\n它可能是其他工程设置的，是否在本工程使用该路径？",
+                MessageType.Info);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("在本工程使用该路径"))
+            {
+                // 切换流程只确认一次；取消或失败时保留迁移入口。
+                if (OpenPrefs(legacyPath, true))
+                    EditorPrefs.SetBool(migratedKey, true);
+            }
+            if (GUILayout.Button("忽略（使用默认路径）"))
+            {
+                EditorPrefs.SetBool(migratedKey, true);
+            }
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.Space(4);
         }
 
         /// <summary>
@@ -362,6 +681,7 @@ namespace FolderTag
                     // 清除被删除项的缓存
                     FoldersBrowser.ClearSpecificCache(element._guid);
                     
+                    MarkDirty();
                     SaveProjectPrefs();
                     EditorApplication.RepaintProjectWindow();
                 }
@@ -386,6 +706,10 @@ namespace FolderTag
                     type,
                     false);
 
+                // 单独记录 ObjectField 本身的变化，避免把"资源暂时解析不到"误判成用户清空
+                var objectFieldChanged = EditorGUI.EndChangeCheck();
+                EditorGUI.BeginChangeCheck();
+
                 element._color = EditorGUI.ColorField(colorRect, GUIContent.none, element._color);
                 element._recursive = EditorGUI.Toggle(recRect, GUIContent.none, element._recursive);
                 var strTag = EditorGUI.TextField(tagRect, GUIContent.none, element._tag);
@@ -400,26 +724,55 @@ namespace FolderTag
                     element._tag = strTag;
                 }
 
-                if (EditorGUI.EndChangeCheck())
-                {
-                    var fodlerGuid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(folder));
+                // 在任何提前返回或短路判断前结束检查，保持 GUI 检查栈配对。
+                var fieldsChanged = EditorGUI.EndChangeCheck();
+                var guidChanged = false;
 
-                    if (element._guid != fodlerGuid)
+                if (objectFieldChanged)
+                {
+                    // 只有 ObjectField 本身变了才处理 GUID 关联，tag/color 的编辑不会碰到 GUID
+                    var path = AssetDatabase.GetAssetPath(folder);
+                    var candidateGuid = string.IsNullOrEmpty(path) ? string.Empty : AssetDatabase.AssetPathToGUID(path);
+
+                    if (folder == null)
                     {
-                        // ignore non directory files
-                        if (folder != null && !File.GetAttributes(AssetDatabase.GetAssetPath(folder)).HasFlag(FileAttributes.Directory)
-                            && !FolderHelper.IsValidScene(AssetDatabase.GetAssetPath(folder)))
+                        // 用户确实把关联项拖空：允许解除关联
+                        if (!string.IsNullOrEmpty(element._guid))
                         {
-                            folder = null;
+                            element._guid = string.Empty;
+                            guidChanged = true;
+                        }
+                    }
+                    else
+                    {
+                        var isDirectory = File.GetAttributes(path).HasFlag(FileAttributes.Directory);
+                        var validType = isDirectory || FolderHelper.IsValidScene(path);
+                        var alreadyUsed = listFoldersData.Any(n => n != element && n._guid == candidateGuid);
+
+                        if (!validType || alreadyUsed)
+                        {
+                            // 校验不通过：保留原 GUID 与原有记录，不改动数据
+                            Debug.LogWarning($"[FolderTag] 已忽略无效或重复的资源拖入：{path}");
+                            EditorApplication.RepaintProjectWindow();
+                            return;
                         }
 
-                        // ignore if already contains
-                        if (folder != null && listFoldersData.Any(n => n._guid == fodlerGuid))
-                            folder = null;
+                        if (element._guid != candidateGuid)
+                        {
+                            element._guid = candidateGuid;
+                            guidChanged = true;
+                        }
                     }
+                }
 
-                    element._guid = AssetDatabase.AssetPathToGUID(AssetDatabase.GetAssetPath(folder));
-                    
+                // 对象换了/清空了，或 color/tag 改了，任一成立都要置脏并保存
+                if (guidChanged || fieldsChanged)
+                {
+                    MarkDirty();
+
+                    if (guidChanged)
+                        dicFoldersData = BuildDictionary(listFoldersData);
+
                     // 清除当前GUID的缓存，确保立即刷新显示
                     FoldersBrowser.ClearSpecificCache(element._guid);
                     
@@ -438,10 +791,15 @@ namespace FolderTag
                 // 清除被删除项的缓存
                 FoldersBrowser.ClearSpecificCache(folderData._guid);
                 
+                MarkDirty();
                 SaveProjectPrefs();
                 EditorApplication.RepaintProjectWindow();
             };
-            currentPreviewList.onAddCallback = data => { listFoldersData.Add(CreateFolderData(isScene)); };
+            currentPreviewList.onAddCallback = data =>
+            {
+                listFoldersData.Add(CreateFolderData(isScene));
+                MarkDirty();
+            };
             currentPreviewList.drawHeaderCallback = rect => { EditorGUI.LabelField(rect, new GUIContent(isScene ? "Scenes" : "Folders", "")); };
 
             return currentPreviewList;
@@ -452,6 +810,30 @@ namespace FolderTag
             var color = Color.HSVToRGB(Random.value, 0.7f, 0.7f);
             color.a = 0.7f;
             return new FolderData() { _color = color, _isScene = isScene };
+        }
+
+        /// <summary>
+        /// 为"继承父目录标签的子目录"创建独立记录。
+        /// 复制父记录的 color/tag/desc 作为初始值（显示上不变样），并关闭 _recursive，
+        /// 避免一编辑就把父目录的继承关系改掉。
+        /// </summary>
+        public static FolderData CreateOverride(string guid, bool isScene, FolderData inherited)
+        {
+            var data = new FolderData()
+            {
+                _guid = guid,
+                _isScene = isScene,
+                _recursive = false
+            };
+
+            if (inherited != null)
+            {
+                data._color = inherited._color;
+                data._tag = inherited._tag;
+                data._desc = inherited._desc;
+            }
+
+            return data;
         }
 
         /// <summary>
@@ -505,6 +887,7 @@ namespace FolderTag
 
         public static void CleanEmptyData()
         {
+            MarkDirty();
             lock (dataLock)
             {
                 if (dicFoldersData == null || listFoldersData == null)
@@ -550,61 +933,186 @@ namespace FolderTag
             }
         }
 
-        public static void SaveProjectPrefs()
+        private void DrawLoadStatePanel()
+        {
+            if (!string.IsNullOrEmpty(mLoadError))
+                EditorGUILayout.HelpBox(mLoadError, MessageType.Warning);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("重新加载")) LoadProjectPrefs();
+            if (GUILayout.Button("保存副本"))
+            {
+                var path = EditorUtility.SaveFilePanel("新建 FolderTag 副本", Application.dataPath, "FolderTag_Prefs_copy.json", "json");
+                if (!string.IsNullOrEmpty(path)) SaveCopy(path);
+            }
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static string SerializeCurrentPrefs()
+        {
+            var data = BuildDictionary(listFoldersData);
+            return JsonUtility.ToJson(new JsonWrapper
+            {
+                LabelColor = FoldersDescColor,
+                FoldersData = new JsonWrapper.DictionaryData(data)
+            }, true);
+        }
+
+        // 副本只新建，不切路径、不清脏，也不允许覆盖已有文件。
+        private static bool SaveCopy(string path)
         {
             try
             {
-                // 确保数据有效性
-                if (listFoldersData == null)
-                {
-                    listFoldersData = new List<FolderData>();
-                }
-
-                dicFoldersData = listFoldersData
-                    .Where(n => n != null && !string.IsNullOrEmpty(n._guid) && n._guid != Guid.Empty.ToString())
-                    .ToDictionary(n => n._guid, n => n);
-
-                var json = new JsonWrapper()
-                {
-                    LabelColor = FoldersDescColor,
-                    FoldersData = new JsonWrapper.DictionaryData<string, FolderData>(dicFoldersData
-                        .Values
-                        .Select(n => new KeyValuePair<string, FolderData>(n._guid, n)))
-                };
-
-                var jsonString = JsonUtility.ToJson(json, true);
-                
-                // 确保目录存在
-                var directory = Path.GetDirectoryName(Opt_FolderTagPath.Value);
-                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                File.WriteAllText(Opt_FolderTagPath.Value, jsonString);
-                
-                // 清除缓存，确保下次绘制时显示最新数据
-                FoldersBrowser.ClearCache();
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                Debug.LogError($"[FolderTag] 无法写入配置文件，权限不足：{ex.Message}");
-            }
-            catch (DirectoryNotFoundException ex)
-            {
-                Debug.LogError($"[FolderTag] 配置文件目录不存在：{ex.Message}");
-            }
-            catch (IOException ex)
-            {
-                Debug.LogError($"[FolderTag] 写入配置文件时发生IO错误：{ex.Message}");
-            }
-            catch (System.ArgumentException ex)
-            {
-                Debug.LogError($"[FolderTag] 序列化配置数据时发生错误：{ex.Message}");
+                var content = SerializeCurrentPrefs();
+                using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+                using (var writer = new StreamWriter(stream)) writer.Write(content);
+                return true;
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[FolderTag] 保存配置文件时发生未知错误：{ex.Message}");
+                mLoadError = "保存副本失败（已有文件不会覆盖）：" + ex.Message;
+                return false;
+            }
+        }
+
+        // 单编辑器普通文件：外部变化只拒写，不强制覆盖，不提供跨进程同步协议。
+        public static bool SaveProjectPrefs()
+        {
+            if (mLoadState == LoadState.Corrupted) return false;
+            try
+            {
+                var path = Opt_FolderTagPath.Value;
+                var diskContent = File.Exists(path) ? File.ReadAllText(path) : null;
+                if (!string.Equals(diskContent, mLoadedContent, StringComparison.Ordinal))
+                {
+                    mLoadError = "配置已在外部改变，未保存当前编辑。请先保存副本或重新加载。";
+                    mHasUnsavedChanges = true;
+                    return false;
+                }
+                var content = SerializeCurrentPrefs();
+                if (!WriteAtomically(path, content, mLoadedContent == null))
+                {
+                    mHasUnsavedChanges = true;
+                    return false;
+                }
+                mLoadedContent = content;
+                mLoadState = LoadState.Ok;
+                mLoadError = null;
+                mHasUnsavedChanges = false;
+                dicFoldersData = BuildDictionary(listFoldersData);
+                FoldersBrowser.ClearCache();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                mLoadError = "保存失败，当前编辑尚未写入：" + ex.Message;
+                mHasUnsavedChanges = true;
+                return false;
+            }
+        }
+
+        // 只定位指定对象的直属字段，跳过字符串和嵌套值，避免说明文本中的字段名误命中。
+        // JSON 的值解析仍交给 JsonUtility；这里只保留它会丢失的“字段是否存在”信息。
+        private static int FindJsonMember(string json, int objectStart, string name)
+        {
+            if (objectStart < 0 || json[objectStart] != '{') return -1;
+            var depth = 0;
+            for (var i = objectStart; i < json.Length; i++)
+            {
+                var c = json[i];
+                if (c == '"')
+                {
+                    var start = ++i;
+                    while (i < json.Length && json[i] != '"')
+                    {
+                        if (json[i] == '\\') i++;
+                        i++;
+                    }
+                    if (i >= json.Length) return -1;
+                    var end = i;
+                    var next = i + 1;
+                    while (next < json.Length && char.IsWhiteSpace(json[next])) next++;
+                    if (depth == 1 && next < json.Length && json[next] == ':')
+                    {
+                        var field = System.Text.RegularExpressions.Regex.Unescape(json.Substring(start, end - start));
+                        if (field == name)
+                        {
+                            do { next++; } while (next < json.Length && char.IsWhiteSpace(json[next]));
+                            return next < json.Length ? next : -1;
+                        }
+                    }
+                }
+                else if (c == '{' || c == '[') depth++;
+                else if (c == '}' || c == ']')
+                {
+                    depth--;
+                    if (depth == 0) return -1;
+                }
+            }
+            return -1;
+        }
+
+        private static string ComputeHash(string content)
+        {
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(content ?? string.Empty));
+                return BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
+        /// 原子写入：先写同目录临时文件（. 前缀 + .tmp~ 后缀，Unity 不 import），
+        /// 关闭后再替换目标。替换失败只报错，原文件保持不动，绝不先删后移。
+        /// </summary>
+        private static bool WriteAtomically(string targetPath, string content, bool expectNotExist)
+        {
+            var directory = Path.GetDirectoryName(targetPath);
+            if (string.IsNullOrEmpty(directory))
+                directory = ".";
+
+            var fileName = Path.GetFileName(targetPath);
+            var tempPath = Path.Combine(directory, "." + fileName + "." + Guid.NewGuid().ToString("N") + ".tmp~");
+
+            try
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(tempPath, content);
+
+                if (expectNotExist)
+                {
+                    // 首次创建：直接落位
+                    File.Move(tempPath, targetPath);
+                }
+                else
+                {
+                    var backupDir = Path.Combine("Library", nameof(FolderTag));
+                    Directory.CreateDirectory(backupDir);
+                    // 每个来源只保留上一版；不以无限备份扩展成历史版本管理。
+                    var backupPath = Path.Combine(backupDir, ComputeHash(Path.GetFullPath(targetPath)) + ".bak");
+                    File.Replace(tempPath, targetPath, backupPath);
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                mLoadError = "写入失败，原文件与当前编辑已保留：" + ex.Message;
+                TryDelete(tempPath);
+                return false;
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                // 删除失败不威胁数据，但要留痕，避免临时文件无限堆积
+                Debug.LogWarning("[FolderTag] 清理临时文件失败，可能残留：" + path + "（" + ex.Message + "）");
             }
         }
     }

@@ -41,7 +41,12 @@ namespace FolderTag
             var folderData = FolderSettings.GetFolderData(guid, path, out bool subFolder);
 
             GUI.enabled = true;
+
+            // 继承来的标签只是"显示值"：编辑时复制一份独立记录来编辑，绝不写回父目录。
+            // 只有真正发生改动（EndChangeCheck）才入库，因此一次编辑只建一条。
             bool create = folderData == null;
+            bool createOverride = false;
+
             if (create)
             {
                 folderData = FolderSettings.CreateFolderData(IsSceneInspector());
@@ -49,6 +54,16 @@ namespace FolderTag
                 folderData._tag = string.Empty;
                 folderData._desc = string.Empty;
             }
+            else if (subFolder)
+            {
+                folderData = FolderSettings.CreateOverride(guid, IsSceneInspector(), folderData);
+                createOverride = true;
+            }
+
+            // 记录编辑前的值，用于判断"确实变了"，避免 GUI 事件顺序造成的空变更也入库
+            var originalTag = folderData._tag;
+            var originalDesc = folderData._desc;
+            var originalColor = folderData._color;
 
             EditorGUI.BeginChangeCheck();
 
@@ -63,14 +78,24 @@ namespace FolderTag
 
             if (EditorGUI.EndChangeCheck())
             {
-                if (create) 
-                    FolderSettings.AddFoldersList(folderData);
+                var reallyChanged =
+                    !string.Equals(originalTag ?? string.Empty, folderData._tag ?? string.Empty, System.StringComparison.Ordinal)
+                    || !string.Equals(originalDesc ?? string.Empty, folderData._desc ?? string.Empty, System.StringComparison.Ordinal)
+                    || originalColor != folderData._color;
 
-                // 清除当前GUID的缓存，确保立即刷新显示
-                FoldersBrowser.ClearSpecificCache(guid);
-                
-                EditorApplication.RepaintProjectWindow();
-                FolderSettings.SaveProjectPrefs();
+                if (reallyChanged)
+                {
+                    if (create || createOverride)
+                        FolderSettings.AddFoldersList(folderData);
+
+                    FolderSettings.MarkDirty();
+
+                    // 清除当前GUID的缓存，确保立即刷新显示
+                    FoldersBrowser.ClearSpecificCache(guid);
+
+                    EditorApplication.RepaintProjectWindow();
+                    FolderSettings.SaveProjectPrefs();
+                }
             }
 
             GUILayout.Space(10);
